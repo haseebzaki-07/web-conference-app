@@ -5,10 +5,19 @@ interface MediaStreamOptions {
   video?: boolean | MediaTrackConstraints;
 }
 
-export function useMediaStream(
-  options: MediaStreamOptions = { audio: true, video: true },
-  autoStart: boolean = false
-) {
+interface UseMediaStreamProps {
+  options?: MediaStreamOptions;
+  autoStart?: boolean;
+  onAudioToggle?: (enabled: boolean) => void;
+  onVideoToggle?: (enabled: boolean) => void;
+}
+
+export function useMediaStream({
+  options = { audio: true, video: true },
+  autoStart = false,
+  onAudioToggle,
+  onVideoToggle,
+}: UseMediaStreamProps = {}) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -47,8 +56,13 @@ export function useMediaStream(
     if (audioTrack) {
       audioTrack.enabled = !audioTrack.enabled;
       setIsMicEnabled(audioTrack.enabled);
+
+      // Notify parent component about audio toggle
+      if (onAudioToggle) {
+        onAudioToggle(audioTrack.enabled);
+      }
     }
-  }, [stream]);
+  }, [stream, onAudioToggle]);
 
   const toggleCamera = useCallback(() => {
     if (!stream) return;
@@ -57,8 +71,13 @@ export function useMediaStream(
     if (videoTrack) {
       videoTrack.enabled = !videoTrack.enabled;
       setIsCameraEnabled(videoTrack.enabled);
+
+      // Notify parent component about video toggle
+      if (onVideoToggle) {
+        onVideoToggle(videoTrack.enabled);
+      }
     }
-  }, [stream]);
+  }, [stream, onVideoToggle]);
 
   const stopStream = useCallback(() => {
     if (stream) {

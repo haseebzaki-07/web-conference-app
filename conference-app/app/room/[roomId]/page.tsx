@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { VideoGrid } from "@/components/video-grid";
 import { ControlBar } from "@/components/control-bar";
 import { ParticipantList } from "@/components/participant-list";
+import { Notification } from "@/components/notification";
 import { useMediaStream } from "@/hooks/useMediaStream";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { nanoid } from "nanoid";
@@ -17,6 +18,13 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
   const [isHost, setIsHost] = useState(false);
   const [roomValid, setRoomValid] = useState<boolean | null>(null);
   const [mediaRequested, setMediaRequested] = useState(false);
+  const [notifications, setNotifications] = useState<
+    Array<{
+      id: string;
+      message: string;
+      type: "info" | "success" | "warning" | "error";
+    }>
+  >([]);
   const roomId = useParams<{ roomId: string }>();
   // Generate or retrieve participant ID
   const participantId = useMemo(() => {
@@ -31,6 +39,11 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
     return nanoid(10);
   }, [roomId]);
 
+  // Create a ref to store the broadcast function
+  const broadcastAudioToggleRef = useRef<((enabled: boolean) => void) | null>(
+    null
+  );
+
   // Get local media stream
   const {
     stream: localStream,
@@ -42,13 +55,19 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
     getMediaStream,
     error: mediaError,
     isLoading: mediaLoading,
-  } = useMediaStream(
-    {
+  } = useMediaStream({
+    options: {
       audio: true,
       video: true,
     },
-    mediaRequested
-  );
+    autoStart: mediaRequested,
+    onAudioToggle: (enabled) => {
+      // Broadcast audio toggle to other participants
+      if (broadcastAudioToggleRef.current) {
+        broadcastAudioToggleRef.current(enabled);
+      }
+    },
+  });
 
   // Setup WebRTC
   const {
@@ -56,12 +75,100 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
     isConnected,
     error: webrtcError,
     disconnect,
+    kickParticipant,
+    muteParticipant,
+    broadcastAudioToggle,
   } = useWebRTC({
     roomId: roomId.roomId,
     participantId,
     localStream,
-    enabled: roomValid === true,
+    enabled: roomValid === true && localStream !== null,
+    onParticipantJoined: (joinedParticipantId) => {
+      // Add notification when participant joins
+      const notificationId = nanoid();
+      setNotifications((prev) => [
+        ...prev,
+        {
+          id: notificationId,
+          message: "A participant joined the room",
+          type: "success",
+        },
+      ]);
+    },
+    onParticipantLeft: (leftParticipantId) => {
+      // Add notification when participant leaves
+      const participantIndex = remoteParticipants.findIndex(
+        (p) => p.id === leftParticipantId
+      );
+      const participantName =
+        participantIndex >= 0
+          ? `Guest ${participantIndex + 1}`
+          : "A participant";
+
+      const notificationId = nanoid();
+      setNotifications((prev) => [
+        ...prev,
+        {
+          id: notificationId,
+          message: `${participantName} left the room`,
+          type: "info",
+        },
+      ]);
+    },
+    onKicked: () => {
+      // Handle being kicked
+      const notificationId = nanoid();
+      setNotifications((prev) => [
+        ...prev,
+        {
+          id: notificationId,
+          message: "You have been removed from the room by the host",
+          type: "error",
+        },
+      ]);
+      // Disconnect and redirect after a short delay
+      setTimeout(() => {
+        stopStream();
+        disconnect();
+        router.push("/");
+      }, 2000);
+    },
+    onMuted: (muted) => {
+      // Handle being muted/unmuted by host
+      if (muted && isMicEnabled) {
+        // Host is muting us - turn off microphone
+        // This will trigger onAudioToggle which broadcasts the state
+        toggleMicrophone();
+        const notificationId = nanoid();
+        setNotifications((prev) => [
+          ...prev,
+          {
+            id: notificationId,
+            message: "You have been muted by the host",
+            type: "warning",
+          },
+        ]);
+      } else if (!muted && !isMicEnabled) {
+        // Host is unmuting us - turn on microphone
+        // This will trigger onAudioToggle which broadcasts the state
+        toggleMicrophone();
+        const notificationId = nanoid();
+        setNotifications((prev) => [
+          ...prev,
+          {
+            id: notificationId,
+            message: "You have been unmuted by the host",
+            type: "info",
+          },
+        ]);
+      }
+    },
   });
+
+  // Update the broadcast ref when the function is available
+  useEffect(() => {
+    broadcastAudioToggleRef.current = broadcastAudioToggle;
+  }, [broadcastAudioToggle]);
 
   // Validate room
   useEffect(() => {
@@ -107,15 +214,32 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
       isCameraEnabled,
     };
 
-    const remote = remoteParticipants.map((p, index) => ({
-      id: p.id,
-      name: `Guest ${index + 1}`,
-      isMuted: false, // We don't track remote mute state in this simple implementation
-      isHost: false,
-      avatar: `G${index + 1}`,
-      stream: p.stream,
-      isCameraEnabled: p.stream?.getVideoTracks()[0]?.enabled ?? false,
-    }));
+    const remote = remoteParticipants.map((p, index) => {
+      const videoTrack = p.stream
+        ?.getVideoTracks()
+        .find((track) => track.readyState !== "ended");
+      const audioTrack = p.stream?.getAudioTracks()[0];
+
+      // Determine mute state: use audioEnabled if available, otherwise check track state
+      let isMuted = false;
+      if (p.audioEnabled !== undefined) {
+        isMuted = !p.audioEnabled;
+      } else if (p.isMuted !== undefined) {
+        isMuted = p.isMuted;
+      } else if (audioTrack) {
+        isMuted = !audioTrack.enabled;
+      }
+
+      return {
+        id: p.id,
+        name: `Guest ${index + 1}`,
+        isMuted,
+        isHost: false,
+        avatar: `G${index + 1}`,
+        stream: p.stream,
+        isCameraEnabled: videoTrack?.enabled ?? false,
+      };
+    });
 
     return [local, ...remote];
   }, [
@@ -139,6 +263,46 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
       setMediaRequested(true);
     } catch (err) {
       console.error("Failed to enable camera:", err);
+    }
+  };
+
+  const removeNotification = (id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  };
+
+  const handleParticipantKick = (participantId: string) => {
+    if (participantId === "local") return; // Can't kick yourself
+    kickParticipant(participantId);
+
+    const notificationId = nanoid();
+    setNotifications((prev) => [
+      ...prev,
+      {
+        id: notificationId,
+        message: "Participant removed from the room",
+        type: "info",
+      },
+    ]);
+  };
+
+  const handleParticipantMute = (participantId: string) => {
+    if (participantId === "local") return; // Can't mute yourself this way
+
+    // Find the participant to check their current mute state
+    const participant = allParticipants.find((p) => p.id === participantId);
+    if (participant) {
+      const newMutedState = !participant.isMuted;
+      muteParticipant(participantId, newMutedState);
+
+      const notificationId = nanoid();
+      setNotifications((prev) => [
+        ...prev,
+        {
+          id: notificationId,
+          message: `Participant ${newMutedState ? "muted" : "unmuted"}`,
+          type: "info",
+        },
+      ]);
     }
   };
 
@@ -202,6 +366,18 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
 
   return (
     <main className="h-screen bg-black flex flex-col">
+      {/* Notification Container */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+        {notifications.map((notification) => (
+          <Notification
+            key={notification.id}
+            message={notification.message}
+            type={notification.type}
+            onClose={() => removeNotification(notification.id)}
+          />
+        ))}
+      </div>
+
       <div className="flex-1 flex overflow-hidden gap-4 p-4">
         {/* Video Grid Area */}
         <div className="flex-1 flex flex-col gap-4">
@@ -221,8 +397,8 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
             <ParticipantList
               participants={allParticipants}
               isHost={isHost}
-              onParticipantMute={() => {}}
-              onParticipantKick={() => {}}
+              onParticipantMute={handleParticipantMute}
+              onParticipantKick={handleParticipantKick}
             />
           </div>
         )}

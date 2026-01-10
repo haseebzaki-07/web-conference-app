@@ -1,19 +1,19 @@
-"use client"
+"use client";
 
-import { VideoTile } from "./video-tile"
+import { VideoTile } from "./video-tile";
 
 interface Participant {
-  id: string
-  name: string
-  isMuted: boolean
-  isHost: boolean
-  avatar: string
-  stream?: MediaStream
-  isCameraEnabled?: boolean
+  id: string;
+  name: string;
+  isMuted: boolean;
+  isHost: boolean;
+  avatar: string;
+  stream?: MediaStream;
+  isCameraEnabled?: boolean;
 }
 
 interface VideoGridProps {
-  participants: Participant[]
+  participants: Participant[];
 }
 
 export function VideoGrid({ participants }: VideoGridProps) {
@@ -23,5 +23,5 @@ export function VideoGrid({ participants }: VideoGridProps) {
         <VideoTile key={participant.id} participant={participant} />
       ))}
     </div>
-  )
+  );
 }

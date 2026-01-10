@@ -111,11 +111,17 @@ wss.on("connection", (ws, req) => {
   ws.on("message", async (data) => {
     try {
       const message = JSON.parse(data.toString());
+      console.log(
+        `[WS Message] Room ${roomId}: Received ${message.type} from ${message.from}`
+      );
 
       // Extract participant ID from first message
       if (message.from && !participantId) {
         participantId = message.from;
         wsToParticipant.set(ws, { roomId, participantId });
+        console.log(
+          `[WS] Participant ${participantId} registered for room ${roomId}`
+        );
       }
 
       // Create MessageEvent-like object for signaling handler

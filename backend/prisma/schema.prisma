@@ -16,10 +16,10 @@ model User {
   image         String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
-  
-  accounts      Account[]
-  sessions      Session[]
-  rooms         Room[]
+
+  accounts Account[]
+  sessions Session[]
+  rooms    Room[]
 }
 
 model Account {
@@ -53,15 +53,15 @@ model Session {
 }
 
 model Room {
-  id          String   @id @default(cuid())
-  roomId      String   @unique
-  name        String?
-  hostId      String
-  host        User     @relation(fields: [hostId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  isActive    Boolean  @default(true)
-  
+  id        String   @id @default(cuid())
+  roomId    String   @unique
+  name      String?
+  hostId    String
+  host      User     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  isActive  Boolean  @default(true)
+
   @@index([roomId])
   @@index([hostId])
 }
