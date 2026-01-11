@@ -26,13 +26,13 @@ export function ParticipantList({
   onParticipantKick,
 }: ParticipantListProps) {
   return (
-    <div className="flex flex-col">
-      <div className="border-b border-border px-4 py-3">
+    <div className="flex flex-col h-full">
+      <div className="border-b border-border px-4 py-3 flex-shrink-0">
         <h2 className="font-semibold text-sm text-card-foreground">
           Participants ({participants.length})
         </h2>
       </div>
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto min-h-0">
         {participants.map((participant) => (
           <ParticipantItem
             key={participant.id}

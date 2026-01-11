@@ -14,7 +14,12 @@ import { useParams, useRouter } from "next/navigation";
 export default function RoomPage({ params }: { params: { roomId: string } }) {
   const router = useRouter();
   const { data: session } = useSession();
-  const [showParticipants, setShowParticipants] = useState(true);
+  const [showParticipants, setShowParticipants] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.innerWidth >= 768; // md breakpoint
+    }
+    return false; // Default to closed (mobile-first)
+  });
   const [isHost, setIsHost] = useState(false);
   const [roomValid, setRoomValid] = useState<boolean | null>(null);
   const [mediaRequested, setMediaRequested] = useState(false);
@@ -378,10 +383,12 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
         ))}
       </div>
 
-      <div className="flex-1 flex overflow-hidden gap-4 p-4">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden gap-4 p-2 md:p-4">
         {/* Video Grid Area */}
-        <div className="flex-1 flex flex-col gap-4">
-          <VideoGrid participants={allParticipants} />
+        <div className="flex-1 flex flex-col gap-4 min-w-0 overflow-hidden relative">
+          <div className="flex-1 overflow-y-auto min-h-0">
+            <VideoGrid participants={allParticipants} />
+          </div>
 
           {/* Connection Status */}
           {!isConnected && (
@@ -393,7 +400,7 @@ export default function RoomPage({ params }: { params: { roomId: string } }) {
 
         {/* Participants Panel - Collapsible */}
         {showParticipants && (
-          <div className="w-64 bg-card border border-border rounded-lg overflow-hidden flex flex-col">
+          <div className="w-full md:w-64 bg-card border border-border rounded-lg overflow-hidden flex flex-col max-h-full">
             <ParticipantList
               participants={allParticipants}
               isHost={isHost}
