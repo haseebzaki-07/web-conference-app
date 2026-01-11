@@ -44,6 +44,8 @@ export function useWebRTC({
   const participantsRef = useRef<Map<string, Participant>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const sendMessageRef = useRef<((msg: any) => void) | null>(null);
+  // Store the original audio track for replaceTrack when unmuting
+  const originalAudioTrackRef = useRef<MediaStreamTrack | null>(null);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -62,7 +64,7 @@ export function useWebRTC({
       if (localStream) {
         localStream.getTracks().forEach((track) => {
           console.log(
-            `Adding ${track.kind} track (${track.id}) to peer connection for ${peerId}`
+            `Adding ${track.kind} track (${track.id}) to peer connection for ${peerId}, enabled=${track.enabled}`
           );
           pc.addTrack(track, localStream);
         });
@@ -75,25 +77,61 @@ export function useWebRTC({
       // Handle incoming tracks
       pc.ontrack = (event) => {
         console.log(
-          `[Track] Received ${event.track.kind} track from ${peerId}`,
+          `[Track] ✅ ontrack fired! Received ${event.track.kind} track from ${peerId}`,
           {
             trackId: event.track.id,
             trackState: event.track.readyState,
             trackEnabled: event.track.enabled,
+            trackMuted: event.track.muted,
             streams: event.streams.length,
+            streamId: event.streams[0]?.id,
           }
         );
+
         const [remoteStream] = event.streams;
+
+        if (!remoteStream) {
+          console.error(`[Track] ❌ No stream in ontrack event for ${peerId}!`);
+          return;
+        }
+
+        // Log all tracks in the stream
+        console.log(`[Track] Stream ${remoteStream.id} details:`, {
+          audioTracks: remoteStream.getAudioTracks().map((t) => ({
+            id: t.id,
+            enabled: t.enabled,
+            muted: t.muted,
+            readyState: t.readyState,
+          })),
+          videoTracks: remoteStream.getVideoTracks().map((t) => ({
+            id: t.id,
+            enabled: t.enabled,
+            muted: t.muted,
+            readyState: t.readyState,
+          })),
+        });
+
+        // Listen for track state changes
+        event.track.onended = () => {
+          console.log(`[Track] Track ${event.track.kind} from ${peerId} ended`);
+        };
+        event.track.onmute = () => {
+          console.log(`[Track] Track ${event.track.kind} from ${peerId} muted`);
+        };
+        event.track.onunmute = () => {
+          console.log(
+            `[Track] Track ${event.track.kind} from ${peerId} unmuted`
+          );
+        };
 
         setParticipants((prev) => {
           const newMap = new Map(prev);
           const participant = newMap.get(peerId) || { id: peerId };
           participant.stream = remoteStream;
           newMap.set(peerId, participant);
-          console.log(`[Track] Updated participant ${peerId} with stream`, {
-            audioTracks: remoteStream.getAudioTracks().length,
-            videoTracks: remoteStream.getVideoTracks().length,
-          });
+          console.log(
+            `[Track] ✅ Updated participant ${peerId} with stream in state`
+          );
           return newMap;
         });
       };
@@ -154,7 +192,7 @@ export function useWebRTC({
       };
 
       pc.onconnectionstatechange = () => {
-        console.log(`Connection state with ${peerId}:`, pc.connectionState);
+        console.log(`[Connection] State with ${peerId}: ${pc.connectionState}`);
         if (
           pc.connectionState === "failed" ||
           pc.connectionState === "disconnected"
@@ -162,6 +200,17 @@ export function useWebRTC({
           // Handle reconnection or cleanup
           console.log(`Connection to ${peerId} ${pc.connectionState}`);
         }
+        if (pc.connectionState === "connected") {
+          console.log(`[Connection] ✅ Fully connected to ${peerId}!`);
+        }
+      };
+
+      pc.onsignalingstatechange = () => {
+        console.log(`[Signaling] State with ${peerId}: ${pc.signalingState}`);
+      };
+
+      pc.onnegotiationneeded = () => {
+        console.log(`[Negotiation] Negotiation needed for ${peerId}`);
       };
 
       return pc;
@@ -236,12 +285,21 @@ export function useWebRTC({
                     console.log(
                       `[useWebRTC] Local description set for ${peerId}, sending offer`
                     );
-                    sendMessage({
-                      type: "offer",
-                      from: participantId,
-                      to: peerId,
-                      sdp: pc.localDescription!,
-                    });
+                    console.log(
+                      `[useWebRTC] sendMessageRef available: ${!!sendMessageRef.current}`
+                    );
+                    if (sendMessageRef.current) {
+                      sendMessageRef.current({
+                        type: "offer",
+                        from: participantId,
+                        to: peerId,
+                        sdp: pc.localDescription!,
+                      });
+                    } else {
+                      console.error(
+                        "[useWebRTC] ❌ Cannot send offer - sendMessageRef is null!"
+                      );
+                    }
                   })
                   .catch((err) => console.error("Error creating offer:", err));
               }
@@ -271,22 +329,39 @@ export function useWebRTC({
             break;
 
           case "offer":
-            console.log("Received offer from", message.from);
+            console.log(`[Offer] Received offer from ${message.from}`);
+            console.log(
+              `[Offer] SDP type: ${message.sdp?.type}, has sdp: ${!!message.sdp
+                ?.sdp}`
+            );
             let peerConnection = participantsRef.current.get(
               message.from
             )?.peerConnection;
 
             if (!peerConnection) {
+              console.log(
+                `[Offer] Creating new peer connection for ${message.from}`
+              );
               peerConnection = createPeerConnection(message.from);
               setParticipants((prev) => {
                 const newMap = new Map(prev);
                 newMap.set(message.from, { id: message.from, peerConnection });
                 return newMap;
               });
+            } else {
+              console.log(
+                `[Offer] Reusing existing peer connection for ${message.from}`
+              );
             }
 
+            console.log(
+              `[Offer] Setting remote description for ${message.from}`
+            );
             await peerConnection.setRemoteDescription(
               new RTCSessionDescription(message.sdp)
+            );
+            console.log(
+              `[Offer] ✅ Remote description set for ${message.from}, signalingState: ${peerConnection.signalingState}`
             );
 
             // Process any queued ICE candidates
@@ -295,25 +370,50 @@ export function useWebRTC({
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
 
-            sendMessage({
-              type: "answer",
-              from: participantId,
-              to: message.from,
-              sdp: peerConnection.localDescription!,
-            });
+            console.log(
+              `[useWebRTC] Sending answer to ${
+                message.from
+              }, sendMessageRef available: ${!!sendMessageRef.current}`
+            );
+            if (sendMessageRef.current) {
+              sendMessageRef.current({
+                type: "answer",
+                from: participantId,
+                to: message.from,
+                sdp: peerConnection.localDescription!,
+              });
+            } else {
+              console.error(
+                "[useWebRTC] ❌ Cannot send answer - sendMessageRef is null!"
+              );
+            }
             break;
 
           case "answer":
-            console.log("Received answer from", message.from);
+            console.log(`[Answer] Received answer from ${message.from}`);
+            console.log(
+              `[Answer] SDP type: ${message.sdp?.type}, has sdp: ${!!message.sdp
+                ?.sdp}`
+            );
             const answerPc = participantsRef.current.get(
               message.from
             )?.peerConnection;
             if (answerPc) {
+              console.log(
+                `[Answer] Setting remote description for ${message.from}, current signalingState: ${answerPc.signalingState}`
+              );
               await answerPc.setRemoteDescription(
                 new RTCSessionDescription(message.sdp)
               );
+              console.log(
+                `[Answer] ✅ Remote description set for ${message.from}, new signalingState: ${answerPc.signalingState}`
+              );
               // Process any queued ICE candidates
               await processQueuedCandidates(message.from, answerPc);
+            } else {
+              console.error(
+                `[Answer] ❌ No peer connection found for ${message.from}!`
+              );
             }
             break;
 
@@ -483,8 +583,98 @@ export function useWebRTC({
     [sendMessage, participantId]
   );
 
+  // Mute/unmute audio on all RTCRtpSenders using replaceTrack for reliable muting
+  const setLocalAudioEnabled = useCallback(
+    async (enabled: boolean) => {
+      const participantCount = participantsRef.current.size;
+      console.log(
+        `[useWebRTC] Setting local audio enabled=${enabled} on ${participantCount} peer connections`
+      );
+
+      // Store original audio track reference when first muting
+      if (!enabled && localStream) {
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (audioTrack && !originalAudioTrackRef.current) {
+          originalAudioTrackRef.current = audioTrack;
+          console.log(
+            `[useWebRTC] Stored original audio track: ${audioTrack.id}`
+          );
+        }
+      }
+
+      if (participantCount === 0) {
+        console.log("[useWebRTC] No peer connections yet, nothing to mute");
+        return;
+      }
+
+      const promises: Promise<void>[] = [];
+
+      participantsRef.current.forEach((participant, peerId) => {
+        const pc = participant.peerConnection;
+        if (!pc) {
+          console.log(`[useWebRTC] No peer connection for ${peerId}`);
+          return;
+        }
+
+        const senders = pc.getSenders();
+        const audioSender = senders.find(
+          (s) => s.track?.kind === "audio" || (!s.track && !enabled)
+        );
+
+        if (audioSender) {
+          if (!enabled) {
+            // Mute: Set track.enabled = false (most reliable)
+            if (audioSender.track) {
+              console.log(
+                `[useWebRTC] Muting audio track ${audioSender.track.id} for ${peerId}`
+              );
+              audioSender.track.enabled = false;
+            }
+          } else {
+            // Unmute: Re-enable the track
+            const trackToEnable =
+              audioSender.track || originalAudioTrackRef.current;
+            if (trackToEnable) {
+              console.log(
+                `[useWebRTC] Unmuting audio track ${trackToEnable.id} for ${peerId}`
+              );
+              trackToEnable.enabled = true;
+              // If the sender lost its track, replace it
+              if (!audioSender.track && originalAudioTrackRef.current) {
+                promises.push(
+                  audioSender
+                    .replaceTrack(originalAudioTrackRef.current)
+                    .then(() => {
+                      console.log(
+                        `[useWebRTC] Replaced track for ${peerId} with original`
+                      );
+                    })
+                    .catch((err) => {
+                      console.error(
+                        `[useWebRTC] Failed to replace track for ${peerId}:`,
+                        err
+                      );
+                    })
+                );
+              }
+            }
+          }
+        } else {
+          console.log(`[useWebRTC] No audio sender found for ${peerId}`);
+        }
+      });
+
+      await Promise.all(promises);
+    },
+    [localStream]
+  );
+
   const broadcastAudioToggle = useCallback(
-    (audioEnabled: boolean) => {
+    async (audioEnabled: boolean) => {
+      // First, ensure audio is muted/unmuted on all peer connections
+      await setLocalAudioEnabled(audioEnabled);
+
+      // Then broadcast the state to other participants
       if (sendMessage) {
         sendMessage({
           type: "audio-toggle",
@@ -493,7 +683,7 @@ export function useWebRTC({
         });
       }
     },
-    [sendMessage, participantId]
+    [sendMessage, participantId, setLocalAudioEnabled]
   );
 
   // Update sendMessage ref when it changes
@@ -516,25 +706,60 @@ export function useWebRTC({
     };
   }, []);
 
-  // Update peer connections when local stream changes
+  // Track the previous localStream to detect actual changes
+  const prevLocalStreamRef = useRef<MediaStream | null>(null);
+
+  // Update peer connections when local stream ACTUALLY changes (not on participant updates)
   useEffect(() => {
     if (!localStream) return;
 
-    participants.forEach((participant) => {
+    // Only update if localStream actually changed
+    if (localStream === prevLocalStreamRef.current) {
+      return;
+    }
+    prevLocalStreamRef.current = localStream;
+
+    console.log("[useWebRTC] localStream changed, updating peer connections");
+
+    // Use the ref to get current participants without depending on the state
+    participantsRef.current.forEach((participant, peerId) => {
       const pc = participant.peerConnection;
       if (!pc) return;
 
-      // Remove old tracks
-      pc.getSenders().forEach((sender) => {
-        pc.removeTrack(sender);
+      // Check if tracks are already added
+      const senders = pc.getSenders();
+      const existingTrackIds = new Set(senders.map((s) => s.track?.id));
+      const newTrackIds = new Set(localStream.getTracks().map((t) => t.id));
+
+      // Skip if tracks are already correct
+      const alreadyHasTracks = localStream
+        .getTracks()
+        .every((t) => existingTrackIds.has(t.id));
+      if (
+        alreadyHasTracks &&
+        senders.length === localStream.getTracks().length
+      ) {
+        console.log(`[useWebRTC] PC for ${peerId} already has correct tracks`);
+        return;
+      }
+
+      console.log(`[useWebRTC] Updating tracks for ${peerId}`);
+
+      // Remove tracks that are no longer in the stream
+      senders.forEach((sender) => {
+        if (sender.track && !newTrackIds.has(sender.track.id)) {
+          pc.removeTrack(sender);
+        }
       });
 
-      // Add new tracks
+      // Add new tracks that aren't already added
       localStream.getTracks().forEach((track) => {
-        pc.addTrack(track, localStream);
+        if (!existingTrackIds.has(track.id)) {
+          pc.addTrack(track, localStream);
+        }
       });
     });
-  }, [localStream, participants]);
+  }, [localStream]); // Only depend on localStream, not participants
 
   return {
     participants: Array.from(participants.values()),

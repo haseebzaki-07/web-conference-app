@@ -54,12 +54,18 @@ export function useMediaStream({
 
     const audioTrack = stream.getAudioTracks()[0];
     if (audioTrack) {
-      audioTrack.enabled = !audioTrack.enabled;
-      setIsMicEnabled(audioTrack.enabled);
+      const newEnabled = !audioTrack.enabled;
+      audioTrack.enabled = newEnabled;
+
+      console.log(
+        `[useMediaStream] Toggled audio track ${audioTrack.id}: enabled=${newEnabled}`
+      );
+
+      setIsMicEnabled(newEnabled);
 
       // Notify parent component about audio toggle
       if (onAudioToggle) {
-        onAudioToggle(audioTrack.enabled);
+        onAudioToggle(newEnabled);
       }
     }
   }, [stream, onAudioToggle]);

@@ -20,15 +20,72 @@ interface VideoTileProps {
 
 export function VideoTile({ participant }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const currentStreamRef = useRef<MediaStream | undefined>(undefined);
   const [, forceUpdate] = useState({});
 
   useEffect(() => {
-    if (videoRef.current && participant.stream) {
-      videoRef.current.srcObject = participant.stream;
-    } else if (videoRef.current && !participant.stream) {
-      videoRef.current.srcObject = null;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const stream = participant.stream;
+
+    // Avoid re-setting the same stream (prevents play() interruption)
+    if (stream === currentStreamRef.current) {
+      return;
     }
-  }, [participant.stream]);
+
+    currentStreamRef.current = stream;
+
+    if (stream) {
+      console.log(`[VideoTile ${participant.id}] Setting srcObject`, {
+        streamId: stream.id,
+        videoTracks: stream.getVideoTracks().length,
+        audioTracks: stream.getAudioTracks().length,
+        videoTrackState: stream.getVideoTracks()[0]?.readyState,
+        videoTrackEnabled: stream.getVideoTracks()[0]?.enabled,
+      });
+      video.srcObject = stream;
+
+      // Wait for video to be ready before playing
+      const handleCanPlay = () => {
+        console.log(
+          `[VideoTile ${participant.id}] canplay fired, attempting play()`
+        );
+        video
+          .play()
+          .then(() => {
+            console.log(
+              `[VideoTile ${participant.id}] ✅ Video playing successfully`
+            );
+          })
+          .catch((err) => {
+            console.warn(
+              `[VideoTile ${participant.id}] Autoplay blocked:`,
+              err.message
+            );
+          });
+      };
+
+      // If already ready, play immediately; otherwise wait for canplay
+      if (video.readyState >= 3) {
+        console.log(
+          `[VideoTile ${participant.id}] Already ready (readyState=${video.readyState})`
+        );
+        handleCanPlay();
+      } else {
+        console.log(
+          `[VideoTile ${participant.id}] Waiting for canplay (readyState=${video.readyState})`
+        );
+        video.addEventListener("canplay", handleCanPlay, { once: true });
+      }
+
+      return () => {
+        video.removeEventListener("canplay", handleCanPlay);
+      };
+    } else {
+      video.srcObject = null;
+    }
+  }, [participant.stream, participant.id]);
 
   // Force re-render when video track state changes
   useEffect(() => {
@@ -101,13 +158,23 @@ export function VideoTile({ participant }: VideoTileProps) {
   return (
     <Card className="relative bg-gradient-to-br from-gray-800 to-gray-900 border-gray-700 overflow-hidden aspect-video flex items-center justify-center group">
       {/* Video Element - Always render if stream exists */}
+      {/* CRITICAL: All videos start muted to satisfy autoplay policy, then unmute remote after playing */}
       {participant.stream && (
         <video
           ref={videoRef}
           autoPlay
           playsInline
-          muted={participant.id === "local" ? false : true}
+          muted
           className="absolute inset-0 w-full h-full object-cover"
+          onPlaying={() => {
+            // Unmute remote videos after they start playing
+            if (videoRef.current && participant.id !== "local") {
+              console.log(
+                `[VideoTile ${participant.id}] Video playing, unmuting`
+              );
+              videoRef.current.muted = false;
+            }
+          }}
         />
       )}
 
